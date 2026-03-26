@@ -1,3 +1,5 @@
+import pandas as pd
+
 import subprocess
 import tempfile
 from collections.abc import Sequence
@@ -6,6 +8,44 @@ from typing import Literal, Optional
 from aspartik.data.msa import MSA
 
 from ._shared import CalculatorKind, SubstitutionModel, TreePrior
+
+
+def _format_taxa(
+    names: list[str],
+    heights: Optional[Sequence] = None,
+) -> str:
+    if heights:
+        taxa = [
+            f'<taxon id="{name}">\n\t\t<date value="{height}" direction="backwards" units="years"/>\n\t</taxon>'
+            for name, height in zip(names, heights)
+        ]
+    else:
+        taxa = [f'<taxon id="{name}"/>' for name in names]
+    return "\n\t\t".join(taxa)
+
+
+def _format_sequences(msa: MSA) -> str:
+    sequences = []
+    for i in range(msa.num_sequences):
+        name = msa.sequence_name(i)
+        seq = str(msa.sequence(i))
+        sequences.append(
+            f'<sequence>\n\t\t\t<taxon idref="{name}"/>\n\t\t\t{seq}\n\t\t</sequence>'
+        )
+    return "\n\t\t".join(sequences)
+
+
+def _format_sequences_raw(
+    names: list[str],
+    sequences: list[str],
+) -> str:
+    parts = []
+    for n, s in zip(names, sequences):
+        parts.append(
+            f'<sequence>\n\t\t\t<taxon idref="{n}"/>\n\t\t\t{s}\n\t\t</sequence>'
+        )
+    return "\n\t\t".join(parts)
+
 
 _beast1_default_template = """<?xml version="1.0" standalone="yes"?>
 
@@ -99,6 +139,119 @@ _beast1_default_template = """<?xml version="1.0" standalone="yes"?>
 """
 
 
+def _xml_hky(kappa: float, frequencies: str) -> str:
+    return f"""\
+    <HKYModel id="hky">
+        <frequencies>
+            <frequencyModel dataType="nucleotide">
+                <frequencies>
+                    <parameter id="frequencies" value="{frequencies}"/>
+                </frequencies>
+            </frequencyModel>
+        </frequencies>
+        <kappa>
+            <parameter id="kappa" value="{kappa}"/>
+        </kappa>
+    </HKYModel>"""
+
+
+def _xml_strict_clock(rate: float) -> str:
+    return f"""\
+    <strictClockBranchRates id="branchRates">
+        <rate>
+            <parameter id="clock_rate" value="{rate}"/>
+        </rate>
+    </strictClockBranchRates>"""
+
+
+def _xml_tree_model(tree_source: str) -> str:
+    return f"""\
+    <treeModel id="tree">
+        {tree_source}
+        <rootHeight>
+            <parameter id="tree.rootHeight"/>
+        </rootHeight>
+        <nodeHeights internalNodes="true">
+            <parameter id="tree.internalNodeHeights"/>
+        </nodeHeights>
+        <nodeHeights internalNodes="true" rootNode="true">
+            <parameter id="tree.allInternalNodeHeights"/>
+        </nodeHeights>
+    </treeModel>"""
+
+
+def _xml_fixed_tree_config(
+    taxa: str,
+    sequences: str,
+    newick: str,
+    kappa: float,
+    frequencies: str,
+    clock_rate: float,
+    log_path: str,
+) -> str:
+    return f"""\
+<?xml version="1.0" standalone="yes"?>
+<beast version="10.5.0">
+    <taxa id="taxa">
+        {taxa}
+    </taxa>
+
+    <alignment id="alignment" dataType="nucleotide">
+        {sequences}
+    </alignment>
+
+    <patterns id="patterns" from="1" strip="false">
+        <alignment idref="alignment"/>
+    </patterns>
+
+    <newick id="startingTree" usingDates="false">
+        {newick}
+    </newick>
+
+{_xml_tree_model('<newick idref="startingTree"/>')}
+
+{_xml_strict_clock(clock_rate)}
+
+{_xml_hky(kappa, frequencies)}
+
+    <siteModel id="siteModel">
+        <substitutionModel>
+            <HKYModel idref="hky"/>
+        </substitutionModel>
+    </siteModel>
+
+    <treeLikelihood id="treeLikelihood" useAmbiguities="false">
+        <patterns idref="patterns"/>
+        <treeModel idref="tree"/>
+        <siteModel idref="siteModel"/>
+        <strictClockBranchRates idref="branchRates"/>
+    </treeLikelihood>
+
+    <operators id="operators" optimizationSchedule="log">
+        <scaleOperator scaleFactor="0.75" weight="1">
+            <parameter idref="tree.rootHeight"/>
+        </scaleOperator>
+    </operators>
+
+    <mcmc id="mcmc" chainLength="0">
+        <posterior id="posterior">
+            <prior id="prior">
+                <strictClockBranchRates idref="branchRates"/>
+            </prior>
+            <likelihood id="likelihood">
+                <treeLikelihood idref="treeLikelihood"/>
+            </likelihood>
+        </posterior>
+        <operators idref="operators"/>
+
+        <log id="fileLog" logEvery="1" fileName="{log_path}">
+            <likelihood idref="likelihood"/>
+        </log>
+    </mcmc>
+</beast>
+"""
+
+
 def _file_log(log: str, log_path: Optional[str]) -> str:
     if not log_path:
         return ""
@@ -166,23 +319,8 @@ def beast1_config(
 ):
     operators, priors, log = "", "", ""
 
-    if heights:
-        taxa = [
-            f'<taxon id="{name}">\n\t\t<date value="{height}" direction="backwards" units="years"/>\n\t</taxon>'
-            for name, height in zip(msa.sequence_names(), heights)
-        ]
-    else:
-        taxa = [f'<taxon id="{name}"/>' for name in msa.sequence_names()]
-    taxa = "\n\t\t".join(taxa)
-
-    sequences = []
-    for i in range(msa.num_sequences):
-        name = msa.sequence_name(i)
-        seq = str(msa.sequence(i))
-        sequences.append(
-            f'<sequence>\n\t\t\t<taxon idref="{name}"/>\n\t\t\t{seq}\n\t\t</sequence>'
-        )
-    sequences = "\n\t\t".join(sequences)
+    taxa = _format_taxa(list(msa.sequence_names()), heights)
+    sequences = _format_sequences(msa)
 
     substitution_model_s = None
     match substitution_model:
@@ -440,3 +578,52 @@ def beast1_run(
         args.append(tmp.name)
 
         subprocess.run(args)
+
+
+def beast1_likelihood(
+    msa_names: list[str],
+    msa_sequences: list[str],
+    newick: str,
+    kappa: float,
+    frequencies: tuple[float, ...],
+    clock_rate: float,
+) -> float:
+    """
+    Run BEAST1 on a fixed tree (zero MCMC steps) and return the likelihood.
+
+    This evaluates Felsenstein's pruning algorithm via BEAGLE and returns
+    the log-likelihood at the initial state — no MCMC moves are performed.
+    """
+    taxa = _format_taxa(msa_names)
+    sequences = _format_sequences_raw(msa_names, msa_sequences)
+    freq_str = " ".join(str(f) for f in frequencies)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = f"{tmpdir}/beast.log"
+        xml = _xml_fixed_tree_config(
+            taxa=taxa,
+            sequences=sequences,
+            newick=newick,
+            kappa=kappa,
+            frequencies=freq_str,
+            clock_rate=clock_rate,
+            log_path=log_path,
+        )
+
+        xml_path = f"{tmpdir}/beast.xml"
+        with open(xml_path, "w") as f:
+            f.write(xml)
+
+        result = subprocess.run(
+            ["beast", "-seed", "1", "-citations_off", "-overwrite", xml_path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"BEAST1 failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+            )
+
+        df = pd.read_csv(log_path, sep="\t", comment="#")
+        return float(df["likelihood"].iloc[0])

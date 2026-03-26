@@ -45,7 +45,8 @@ testpaths = ["python/tests"]
 python_files = ["*.py"]
 strict_markers = true
 markers = [
-	"manual: slow tests which shouldn't be executed by default"
+	"manual: slow tests which shouldn't be executed by default",
+	"likelihood: likelihood tests requiring BEAST1 and BEAGLE",
 ]
 
 [tool.pyright]

@@ -24,14 +24,22 @@ def pytest_report_teststatus(report: TestReport, config: Config):
     return report.outcome, letter, report.outcome.upper()
 
 
-def pytest_collection_modifyitems(config, items):
-    if config.getoption("-m") == "manual":
-        return
+_SKIP_MARKERS = {
+    "manual": "need -m manual option to run",
+    "likelihood": "need -m likelihood option to run (requires BEAST1 + BEAGLE)",
+}
 
-    skip_manual = pytest.mark.skip(reason="need -m manual option to run")
-    for item in items:
-        if "manual" in item.keywords:
-            item.add_marker(skip_manual)
+
+def pytest_collection_modifyitems(config, items):
+    selected = config.getoption("-m")
+
+    for marker, reason in _SKIP_MARKERS.items():
+        if selected == marker:
+            continue
+        skip = pytest.mark.skip(reason=reason)
+        for item in items:
+            if marker in item.keywords:
+                item.add_marker(skip)
 
 
 @fixture

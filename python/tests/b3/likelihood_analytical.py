@@ -1,0 +1,80 @@
+import pytest
+
+from aspartik.b3 import Clock
+from aspartik.b3.likelihoods import CPU4Likelihood
+from aspartik.b3.parameters import Real, RealVector, Tree
+from aspartik.b3.substitutions import HKY, JC
+from aspartik.b3.utils.analytical import analytical_hky_2leaf, analytical_jc_2leaf
+from aspartik.data import DNASeq
+from aspartik.data.msa import MSA
+from aspartik.rng import RNG
+
+_EPS = 1e-10
+
+
+class TestJC2Leaf:
+    @pytest.mark.parametrize(
+        ["seq1", "seq2", "height", "clock"],
+        [
+            ("A", "A", 1.0, 1.0),
+            ("ACGTACGTACGT", "ACGTACGTACGT", 0.5, 1.0),
+            ("AAACCCGGGTTT", "ACGTACGTACGT", 0.3, 1.5),
+            ("ACGT", "TGCA", 0.1, 3.0),
+        ],
+        ids=["single_site", "identical", "different", "all_different"],
+    )
+    def test_jc2(
+        self, seq1: str, seq2: str, height: float, clock: float, rng: RNG
+    ) -> None:
+        tree = Tree(["A", "B"], rng)
+        tree.set_height(tree.root, height)
+
+        msa = MSA(["A", "B"], [DNASeq(seq1), DNASeq(seq2)])
+
+        ll = CPU4Likelihood(
+            msa=msa,
+            substitution=JC(),
+            clock=Clock.Strict(Real(clock)),
+            tree=tree,
+        )
+
+        b3_ll = ll.likelihood()
+        expected = analytical_jc_2leaf(seq1, seq2, clock * height)
+
+        assert abs(b3_ll - expected) < _EPS, f"b3={b3_ll}, expected={expected}"
+
+
+class TestHKY2Leaf:
+    @pytest.mark.parametrize(
+        ["seq1", "seq2", "height", "kappa", "freqs"],
+        [
+            ("AACCGGTTACGT", "ACGTACGTACGT", 0.4, 2.0, (0.25, 0.25, 0.25, 0.25)),
+            ("AAACCCGGGTTTACGT", "ACGTACGTACGTACGT", 0.25, 4.0, (0.3, 0.2, 0.2, 0.3)),
+        ],
+        ids=["equal_freqs", "unequal_freqs"],
+    )
+    def test_hky2(
+        self,
+        seq1: str,
+        seq2: str,
+        height: float,
+        kappa: float,
+        freqs: tuple[float, ...],
+        rng: RNG,
+    ) -> None:
+        tree = Tree(["A", "B"], rng)
+        tree.set_height(tree.root, height)
+
+        msa = MSA(["A", "B"], [DNASeq(seq1), DNASeq(seq2)])
+
+        ll = CPU4Likelihood(
+            msa=msa,
+            substitution=HKY(RealVector(*freqs), Real(kappa)),
+            clock=Clock.Strict(Real(1.0)),
+            tree=tree,
+        )
+
+        b3_ll = ll.likelihood()
+        expected = analytical_hky_2leaf(seq1, seq2, height, kappa, freqs)
+
+        assert abs(b3_ll - expected) < _EPS, f"b3={b3_ll}, expected={expected}"
