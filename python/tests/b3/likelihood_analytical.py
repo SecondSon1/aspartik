@@ -9,19 +9,18 @@ from aspartik.data import DNASeq
 from aspartik.data.msa import MSA
 from aspartik.rng import RNG
 
-_EPS = 1e-10
+_EPS = 1e-14
 
 
 class TestJC2Leaf:
     @pytest.mark.parametrize(
-        ["seq1", "seq2", "height", "clock"],
-        [
-            ("A", "A", 1.0, 1.0),
-            ("ACGTACGTACGT", "ACGTACGTACGT", 0.5, 1.0),
-            ("AAACCCGGGTTT", "ACGTACGTACGT", 0.3, 1.5),
-            ("ACGT", "TGCA", 0.1, 3.0),
-        ],
-        ids=["single_site", "identical", "different", "all_different"],
+        ("seq1", "seq2", "height", "clock"),
+        (
+            pytest.param("A", "A", 1.0, 1.0, id="single_site"),
+            pytest.param("ACGTACGTACGT", "ACGTACGTACGT", 0.5, 1.0, id="identical"),
+            pytest.param("AAACCCGGGTTT", "ACGTACGTACGT", 0.3, 1.5, id="different"),
+            pytest.param("ACGT", "TGCA", 0.1, 3.0, id="all_different"),
+        ),
     )
     def test_jc2(
         self, seq1: str, seq2: str, height: float, clock: float, rng: RNG
@@ -44,14 +43,17 @@ class TestJC2Leaf:
         assert abs(b3_ll - expected) < _EPS, f"b3={b3_ll}, expected={expected}"
 
 
+_EQUAL_FREQS = ("AACCGGTTACGT", "ACGTACGTACGT", 0.4, 2.0, (0.25, 0.25, 0.25, 0.25))
+_UNEQUAL_FREQS = ("AAACCCGGGTTTACG", "ACGTACGTACGTACG", 0.25, 4.0, (0.3, 0.2, 0.2, 0.3))
+
+
 class TestHKY2Leaf:
     @pytest.mark.parametrize(
-        ["seq1", "seq2", "height", "kappa", "freqs"],
-        [
-            ("AACCGGTTACGT", "ACGTACGTACGT", 0.4, 2.0, (0.25, 0.25, 0.25, 0.25)),
-            ("AAACCCGGGTTTACGT", "ACGTACGTACGTACGT", 0.25, 4.0, (0.3, 0.2, 0.2, 0.3)),
-        ],
-        ids=["equal_freqs", "unequal_freqs"],
+        ("seq1", "seq2", "height", "kappa", "freqs"),
+        (
+            pytest.param(*_EQUAL_FREQS, id="equal_freqs"),
+            pytest.param(*_UNEQUAL_FREQS, id="unequal_freqs"),
+        ),
     )
     def test_hky2(
         self,
