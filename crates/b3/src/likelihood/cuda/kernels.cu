@@ -1,4 +1,5 @@
 #include <cooperative_groups.h>
+#define restrict __restrict__
 
 using namespace cooperative_groups;
 
