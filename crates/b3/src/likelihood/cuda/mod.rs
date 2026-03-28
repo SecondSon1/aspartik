@@ -323,6 +323,29 @@ impl CudaLikelihood {
 		}
 	}
 
+	#[rustfmt::skip]
+	fn cuda_include_paths() -> Vec<String> {
+		let cuda_base = std::env::var("CUDA_PATH").ok()
+			.or_else(|| Some("/opt/cuda".to_owned()))
+			.filter(|base| std::path::Path::new(base).join("include").exists())
+			.unwrap_or_else(|| "/usr/local/cuda".to_owned());
+
+		let cuda_include = format!("{cuda_base}/include/");
+		let targets_dir = std::path::Path::new(&cuda_base).join("targets");
+		let Ok(entries) = std::fs::read_dir(&targets_dir) else {
+			return vec![cuda_include];
+		};
+
+		// CCCL headers (cuda/std/*, cub/*, etc.) are shipped in a
+		// separate directory starting from CUDA 12.8+.
+		entries.flatten()
+			.map(|entry| entry.path().join("include/cccl"))
+			.filter(|cccl_dir| cccl_dir.is_dir())
+			.map(|cccl_dir| cccl_dir.to_string_lossy().into_owned())
+			.chain(std::iter::once(cuda_include))
+			.collect()
+	}
+
 	pub fn new(
 		pattern_weights: Vec<u32>,
 		leaves: Vec<u8>,
@@ -375,9 +398,7 @@ impl CudaLikelihood {
 		let scale_sums_backup = stream.alloc_zeros(num_patterns)?;
 
 		let opts = CompileOptions {
-			include_paths: vec![
-				"/usr/local/cuda/include/".to_owned()
-			],
+			include_paths: Self::cuda_include_paths(),
 			options: vec![
 				format!("-DNUM_PATTERNS={num_patterns}"),
 				format!("-DNUM_LEAVES={num_leaves}"),
