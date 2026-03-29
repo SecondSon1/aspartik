@@ -1,13 +1,13 @@
 import pytest
+from utils.likelihood import load_likelihood_from_fasta
 
 import glob
 
 from aspartik.b3 import Clock
 from aspartik.b3.config._beast1 import beast1_likelihood
 from aspartik.b3.likelihoods import CPU4Likelihood
-from aspartik.b3.parameters import Real, RealVector, Tree
+from aspartik.b3.parameters import Real, RealVector
 from aspartik.b3.substitutions import HKY
-from aspartik.io import read_msa_from_fasta
 from aspartik.rng import RNG
 
 _FASTA_FILES = sorted(glob.glob("data/alignments/*.fasta"))
@@ -28,16 +28,14 @@ class TestBeast1:
         kappa: float,
         freqs: tuple[float, ...],
         clock_rate: float,
-        rng: RNG
+        rng: RNG,
     ):
-        msa = read_msa_from_fasta(fasta)
-        tree = Tree(list(msa.sequence_names()), rng)
-
-        ll = CPU4Likelihood(
-            msa=msa,
+        msa, tree, ll = load_likelihood_from_fasta(
+            fasta,
+            rng=rng,
             substitution=HKY(RealVector(*freqs), Real(kappa)),
             clock=Clock.Strict(Real(clock_rate)),
-            tree=tree,
+            backend=CPU4Likelihood,
         )
 
         b3_ll = ll.likelihood()

@@ -1,29 +1,27 @@
 import pytest
+from utils.likelihood import load_likelihood_from_fasta
 
-from typing import TypeAlias
+from collections.abc import Callable
+from typing import Any
 
 from aspartik.b3 import Clock
-from aspartik.b3.likelihoods import CPU4Likelihood, CUDALikelihood
+from aspartik.b3.likelihoods import CPU4Likelihood, CUDALikelihood, Likelihood
 from aspartik.b3.parameters import Real, RealVector, Tree
 from aspartik.b3.substitutions import HKY, JC, Substiution4
-from aspartik.io import read_msa_from_fasta
 from aspartik.rng import RNG
-
-Likelihood: TypeAlias = CPU4Likelihood | CUDALikelihood
 
 
 def _load(
     rng: RNG,
     substitution: Substiution4,
-    ll_backend: Likelihood,
+    ll_backend: Callable[..., Likelihood],
 ) -> tuple[Tree, Likelihood]:
-    msa = read_msa_from_fasta("data/alignments/apes.fasta")
-    tree = Tree(msa.sequence_names(), rng)
-    ll = ll_backend(
-        msa=msa,
+    _, tree, ll = load_likelihood_from_fasta(
+        "data/alignments/apes.fasta",
+        rng=rng,
         substitution=substitution,
         clock=Clock.Strict(Real(1.0)),
-        tree=tree,
+        backend=ll_backend,
     )
     return tree, ll
 
@@ -36,7 +34,7 @@ def _cuda_detected() -> bool:
         return False
 
 
-def _likelihood_backends() -> list[Likelihood]:
+def _likelihood_backends() -> list[Any]:
     params = [pytest.param(CPU4Likelihood, id="cpu")]
     if _cuda_detected():
         params.append(pytest.param(CUDALikelihood, id="cuda"))
@@ -48,7 +46,7 @@ _LIKELIHOOD_BACKENDS = _likelihood_backends()
 
 class TestLikelihoods:
     @pytest.mark.parametrize(argnames=["ll_backend"], argvalues=_LIKELIHOOD_BACKENDS)
-    def test_fuzz(self, rng: RNG, ll_backend: Likelihood) -> None:
+    def test_fuzz(self, rng: RNG, ll_backend: Callable[..., Likelihood]) -> None:
         _, ll = _load(rng, HKY(RealVector(0.1, 0.2, 0.3, 0.4), Real(2.0)), ll_backend)
 
         assert ll.num_patterns() == 69
@@ -64,7 +62,7 @@ class TestLikelihoods:
 
     @pytest.mark.parametrize(argnames=["ll_backend"], argvalues=_LIKELIHOOD_BACKENDS)
     def test_reject_restores_exact_value(
-        self, rng: RNG, ll_backend: Likelihood
+        self, rng: RNG, ll_backend: Callable[..., Likelihood]
     ) -> None:
         tree, ll = _load(
             rng, HKY(RealVector(0.25, 0.25, 0.25, 0.25), Real(2.0)), ll_backend
@@ -87,7 +85,7 @@ class TestLikelihoods:
 
     @pytest.mark.parametrize(argnames=["ll_backend"], argvalues=_LIKELIHOOD_BACKENDS)
     def test_multiple_accept_reject_cycles(
-        self, rng: RNG, ll_backend: Likelihood
+        self, rng: RNG, ll_backend: Callable[..., Likelihood]
     ) -> None:
         tree, ll = _load(rng, JC(), ll_backend)
 
