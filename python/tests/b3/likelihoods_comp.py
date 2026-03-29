@@ -34,7 +34,7 @@ def test_compare_likelihood():
             num_threads=threads,
         )
         for scale in SCALES
-        for threads in [0, 1, 4]
+        for threads in [0, 1, 4, 32]
     ]
     try:
         cuda_calculator = CUDALikelihood(

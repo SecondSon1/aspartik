@@ -24,7 +24,7 @@ arrow-schema = { workspace = true }
 blake3 = { workspace = true }
 bytemuck = { workspace = true, features = ["derive", "extern_crate_alloc"] }
 cudarc = { workspace = true, features = ["driver", "nvrtc", "dynamic-loading", "cuda-12000", "std"] }
-fork_union = { workspace = true }
+rayon = { workspace = true }
 num-traits = { workspace = true }
 parking_lot = { workspace = true }
 pyo3 = { workspace = true, features = ["anyhow"] }
