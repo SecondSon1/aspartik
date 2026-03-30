@@ -15,7 +15,7 @@ try:
         MetalLikelihood as MetalLikelihood,
     )
 except ImportError:
-    MetalLikelihood = None  # type: ignore[assignment, misc]
+    MetalLikelihood = None  # type: ignore[assignment]
 from . import Stateful
 
 
