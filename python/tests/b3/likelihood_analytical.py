@@ -1,7 +1,10 @@
 import pytest
+from utils.likelihood import LIKELIHOOD_BACKEND_PARAMS
+
+from collections.abc import Callable
 
 from aspartik.b3 import Clock
-from aspartik.b3.likelihoods import CPU4Likelihood
+from aspartik.b3.likelihoods import CPU4Likelihood, Likelihood, MetalLikelihood
 from aspartik.b3.parameters import Real, RealVector, Tree
 from aspartik.b3.substitutions import HKY, JC
 from aspartik.b3.utils.analytical import analytical_hky_2leaf, analytical_jc_2leaf
@@ -9,10 +12,16 @@ from aspartik.data import DNASeq
 from aspartik.data.msa import MSA
 from aspartik.rng import RNG
 
-_EPS = 1e-14
+_EPS_F64 = 1e-14
+_EPS_F32 = 1e-5
+
+
+def _eps(ll_backend: Callable[..., Likelihood]) -> float:
+    return _EPS_F32 if ll_backend is MetalLikelihood else _EPS_F64
 
 
 class TestJC2Leaf:
+    @pytest.mark.parametrize("ll_backend", LIKELIHOOD_BACKEND_PARAMS)
     @pytest.mark.parametrize(
         ("seq1", "seq2", "height", "clock"),
         (
@@ -23,14 +32,20 @@ class TestJC2Leaf:
         ),
     )
     def test_jc2(
-        self, seq1: str, seq2: str, height: float, clock: float, rng: RNG
+        self,
+        seq1: str,
+        seq2: str,
+        height: float,
+        clock: float,
+        ll_backend: Callable[..., Likelihood],
+        rng: RNG,
     ) -> None:
         tree = Tree(["A", "B"], rng)
         tree.set_height(tree.root, height)
 
         msa = MSA(["A", "B"], [DNASeq(seq1), DNASeq(seq2)])
 
-        ll = CPU4Likelihood(
+        ll = ll_backend(
             msa=msa,
             substitution=JC(),
             clock=Clock.Strict(Real(clock)),
@@ -40,7 +55,9 @@ class TestJC2Leaf:
         b3_ll = ll.likelihood()
         expected = analytical_jc_2leaf(seq1, seq2, clock * height)
 
-        assert abs(b3_ll - expected) < _EPS, f"b3={b3_ll}, expected={expected}"
+        assert abs(b3_ll - expected) < _eps(ll_backend), (
+            f"b3={b3_ll}, expected={expected}"
+        )
 
 
 _EQUAL_FREQS = ("AACCGGTTACGT", "ACGTACGTACGT", 0.4, 2.0, (0.25, 0.25, 0.25, 0.25))
@@ -48,6 +65,7 @@ _UNEQUAL_FREQS = ("AAACCCGGGTTTACG", "ACGTACGTACGTACG", 0.25, 4.0, (0.3, 0.2, 0.
 
 
 class TestHKY2Leaf:
+    @pytest.mark.parametrize("ll_backend", LIKELIHOOD_BACKEND_PARAMS)
     @pytest.mark.parametrize(
         ("seq1", "seq2", "height", "kappa", "freqs"),
         (
@@ -62,6 +80,7 @@ class TestHKY2Leaf:
         height: float,
         kappa: float,
         freqs: tuple[float, ...],
+        ll_backend: Callable[..., Likelihood],
         rng: RNG,
     ) -> None:
         tree = Tree(["A", "B"], rng)
@@ -69,7 +88,7 @@ class TestHKY2Leaf:
 
         msa = MSA(["A", "B"], [DNASeq(seq1), DNASeq(seq2)])
 
-        ll = CPU4Likelihood(
+        ll = ll_backend(
             msa=msa,
             substitution=HKY(RealVector(*freqs), Real(kappa)),
             clock=Clock.Strict(Real(1.0)),
@@ -79,4 +98,6 @@ class TestHKY2Leaf:
         b3_ll = ll.likelihood()
         expected = analytical_hky_2leaf(seq1, seq2, height, kappa, freqs)
 
-        assert abs(b3_ll - expected) < _EPS, f"b3={b3_ll}, expected={expected}"
+        assert abs(b3_ll - expected) < _eps(ll_backend), (
+            f"b3={b3_ll}, expected={expected}"
+        )
