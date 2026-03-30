@@ -337,11 +337,7 @@ likelihood_methods! {PyCudaLikelihood;
 ///
 /// Only supports 4-state DNA models.
 #[cfg(target_os = "macos")]
-#[pyclass(
-	name = "MetalLikelihood",
-	module = "aspartik.b3.likelihoods",
-	frozen
-)]
+#[pyclass(name = "MetalLikelihood", module = "aspartik.b3.likelihoods", frozen)]
 pub struct PyMetalLikelihood {
 	inner: Mutex<GenericLikelihood<4, f64, MetalLikelihood>>,
 }

@@ -1,23 +1,16 @@
-"""
-Tests for the Metal likelihood backend.
-
-Mirrors the structure of likelihoods.py and likelihood_analytical.py, but
-restricted to MetalLikelihood.  The suite is skipped entirely on non-macOS
-platforms or when MetalLikelihood failed to import.
-"""
-
 import pytest
 from utils.likelihood import load_likelihood_from_fasta
 
 import sys
 
 from aspartik.b3 import Clock
-from aspartik.b3.likelihoods import CPU4Likelihood, MetalLikelihood
+from aspartik.b3.likelihoods import CPU4Likelihood, Likelihood, MetalLikelihood
 from aspartik.b3.parameters import Real, RealVector, Tree
-from aspartik.b3.substitutions import HKY, JC
+from aspartik.b3.substitutions import HKY, JC, Substiution4
 from aspartik.b3.utils.analytical import analytical_hky_2leaf, analytical_jc_2leaf
 from aspartik.data import DNASeq
 from aspartik.data.msa import MSA
+from aspartik.io import read_msa_from_fasta
 from aspartik.rng import RNG
 
 _metal_available = MetalLikelihood is not None and sys.platform == "darwin"
@@ -28,24 +21,23 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-# ─── Helpers ─────────────────────────────────────────────────────────────────
-
-
-def _load_metal(rng: RNG, substitution, scale_ln: int = 30):
+def _load_metal(
+    rng: RNG, substitution: Substiution4, scale_ln: int = 30
+) -> tuple[Tree, Likelihood]:
     _, tree, ll = load_likelihood_from_fasta(
         "data/alignments/apes.fasta",
         rng=rng,
         substitution=substitution,
         clock=Clock.Strict(Real(1.0)),
-        backend=lambda **kwargs: MetalLikelihood(**kwargs, scale_ln=scale_ln),
+        backend=MetalLikelihood,
+        scale_ln=scale_ln,
     )
     return tree, ll
 
 
-def _metal_cpu_pair(rng: RNG, substitution, scale_ln: int = 30):
-    """Return (metal_ll, cpu_ll) built from the *same* tree & parameters."""
-    from aspartik.io import read_msa_from_fasta
-
+def _metal_cpu_pair(
+    rng: RNG, substitution: Substiution4, scale_ln: int = 30
+) -> tuple[Tree, MetalLikelihood, CPU4Likelihood]:
     msa = read_msa_from_fasta("data/alignments/apes.fasta")
     tree = Tree(msa.sequence_names(), rng)
     clock_rate = Real(1.0)
@@ -68,22 +60,18 @@ def _metal_cpu_pair(rng: RNG, substitution, scale_ln: int = 30):
     return tree, metal_ll, cpu_ll
 
 
-# ─── Fuzz / lifecycle tests ───────────────────────────────────────────────────
-
-
 class TestMetalLifecycle:
     def test_num_patterns(self, rng: RNG) -> None:
         _, ll = _load_metal(rng, JC())
         assert ll.num_patterns() == 69
 
     def test_fuzz(self, rng: RNG) -> None:
-        """1 000 random likelihood / accept / reject calls must not crash."""
         _, ll = _load_metal(rng, HKY(RealVector(0.1, 0.2, 0.3, 0.4), Real(2.0)))
 
         for _ in range(1000):
             match rng.random_int(0, 3):
                 case 0:
-                    ll.likelihood()
+                    _ = ll.likelihood()
                 case 1:
                     ll.accept()
                 case 2:
@@ -138,11 +126,8 @@ class TestMetalLifecycle:
                 )
 
 
-# ─── Agreement with CPU backend ───────────────────────────────────────────────
-
 _SCALE_LNS = [3, 30, 300]
-# Metal uses f32 for GPU computation; single-precision relative error is ~1e-6.
-_REL_TOL = 1e-4
+_REL_TOL = 1e-7
 
 
 class TestMetalMatchesCpu:
