@@ -24,6 +24,11 @@ arrow-schema = { workspace = true }
 blake3 = { workspace = true }
 bytemuck = { workspace = true, features = ["derive", "extern_crate_alloc"] }
 cudarc = { workspace = true, features = ["driver", "nvrtc", "dynamic-loading", "cuda-12000", "std"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+objc2-metal = { workspace = true }
+objc2-foundation = { workspace = true }
 rayon = { workspace = true }
 num-traits = { workspace = true }
 parking_lot = { workspace = true }

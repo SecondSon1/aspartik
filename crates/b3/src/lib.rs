@@ -40,6 +40,10 @@ pub mod pymodule {
 		substitution::{PyGTR, PyHKY, PyJC, PyK80},
 	};
 
+	#[cfg(target_os = "macos")]
+	#[pymodule_export]
+	use crate::likelihood::PyMetalLikelihood;
+
 	#[pymodule_init]
 	fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
 		util::py_patch_module!(m);
