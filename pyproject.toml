@@ -40,7 +40,7 @@ manifest-path = "crates/aspartik/Cargo.toml"
 features = ["pyo3/extension-module"]
 include = ["LICENSE"]
 
-[tool.pytest]
+[tool.pytest.ini_options]
 testpaths = ["python/tests"]
 python_files = ["*.py"]
 strict_markers = true

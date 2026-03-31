@@ -171,16 +171,19 @@ impl Calculator<4, f64> for MetalLikelihood {
 		let mut leaves_end = leaves_end as u32;
 		let internals_start = leaves_end;
 
+		let cmd = self.command_buffer()?;
+
 		if leaves_end > 10 {
-			self.encode_update_leaves(leaves_end)?;
+			self.encode_update_leaves(&cmd, leaves_end)?;
 			leaves_end = 0;
 		}
-		self.encode_update_all(leaves_end, internals_start)?;
+		self.encode_update_all(&cmd, leaves_end, internals_start)?;
 
 		let root = *nodes_u32.last().unwrap();
 		let freq_f32: [f32; 4] =
 			transitions.frequencies().map(|v| v as f32);
 		self.encode_update_likelihoods(
+			&cmd,
 			root,
 			(root_children[0] as u32, root_children[1] as u32),
 			freq_f32,
@@ -188,10 +191,9 @@ impl Calculator<4, f64> for MetalLikelihood {
 
 		drop(tree);
 
-		// Submit all pending work and wait.
-		let cmd = self.command_buffer()?;
 		cmd.commit();
 		cmd.waitUntilCompleted();
+		Self::check_completion(&cmd)?;
 
 		// SAFETY: GPU work is complete, buffers are now CPU-readable.
 		// Likelihoods are stored as f32 on the GPU; promote to f64 here.
@@ -219,15 +221,23 @@ impl Calculator<4, f64> for MetalLikelihood {
 	}
 
 	fn accept(&mut self) -> Result<()> {
-		self.blit_scale_sums(true)?;
-		self.encode_copy_projections(true)?;
+		let cmd = self.command_buffer()?;
+		self.encode_blit_scale_sums(&cmd, true)?;
+		self.encode_copy_projections(&cmd, true)?;
+		cmd.commit();
+		cmd.waitUntilCompleted();
+		Self::check_completion(&cmd)?;
 		self.num_updated_nodes = 0;
 		Ok(())
 	}
 
 	fn reject(&mut self) -> Result<()> {
-		self.blit_scale_sums(false)?;
-		self.encode_copy_projections(false)?;
+		let cmd = self.command_buffer()?;
+		self.encode_blit_scale_sums(&cmd, false)?;
+		self.encode_copy_projections(&cmd, false)?;
+		cmd.commit();
+		cmd.waitUntilCompleted();
+		Self::check_completion(&cmd)?;
 		self.num_updated_nodes = 0;
 		Ok(())
 	}
@@ -238,10 +248,13 @@ impl Calculator<4, f64> for MetalLikelihood {
 }
 
 impl MetalLikelihood {
-	/// Encode and submit the leaf-projection update kernel.
-	fn encode_update_leaves(&self, leaves_end: u32) -> Result<()> {
-		let cmd = self.command_buffer()?;
-		let enc = self.compute_encoder(&cmd)?;
+	/// Encode the leaf-projection update kernel onto `cmd`.
+	fn encode_update_leaves(
+		&self,
+		cmd: &ProtocolObject<dyn MTLCommandBuffer>,
+		leaves_end: u32,
+	) -> Result<()> {
+		let enc = self.compute_encoder(cmd)?;
 
 		let block_size: usize = 16;
 		let num_pattern_blocks =
@@ -275,13 +288,13 @@ impl MetalLikelihood {
 			},
 		);
 		enc.endEncoding();
-		cmd.commit();
 		Ok(())
 	}
 
-	/// Encode and submit the main `propose` kernel.
+	/// Encode the main `propose` kernel onto `cmd`.
 	fn encode_update_all(
 		&self,
+		cmd: &ProtocolObject<dyn MTLCommandBuffer>,
 		leaves_end: u32,
 		internals_start: u32,
 	) -> Result<()> {
@@ -289,8 +302,7 @@ impl MetalLikelihood {
 		let num_pattern_blocks =
 			(self.num_patterns * 4).div_ceil(block_size);
 
-		let cmd = self.command_buffer()?;
-		let enc = self.compute_encoder(&cmd)?;
+		let enc = self.compute_encoder(cmd)?;
 
 		enc.setComputePipelineState(&self.propose_pipeline);
 		unsafe {
@@ -334,13 +346,13 @@ impl MetalLikelihood {
 			},
 		);
 		enc.endEncoding();
-		cmd.commit();
 		Ok(())
 	}
 
-	/// Encode and submit the root likelihood kernel.
+	/// Encode the root likelihood kernel onto `cmd`.
 	fn encode_update_likelihoods(
 		&self,
+		cmd: &ProtocolObject<dyn MTLCommandBuffer>,
 		root: u32,
 		(left_child, right_child): (u32, u32),
 		frequencies: [f32; 4],
@@ -348,8 +360,7 @@ impl MetalLikelihood {
 		let block_size: u32 = 32;
 		let num_pattern_blocks = self.num_patterns.div_ceil(block_size);
 
-		let cmd = self.command_buffer()?;
-		let enc = self.compute_encoder(&cmd)?;
+		let enc = self.compute_encoder(cmd)?;
 
 		enc.setComputePipelineState(&self.update_likelihoods_pipeline);
 		unsafe {
@@ -394,19 +405,20 @@ impl MetalLikelihood {
 			},
 		);
 		enc.endEncoding();
-		cmd.commit();
 		Ok(())
 	}
 
-	/// Encode and submit the copy_projections kernel (accept or reject)
-	/// and wait for completion.
-	fn encode_copy_projections(&mut self, accept: bool) -> Result<()> {
+	/// Encode the copy_projections kernel (accept or reject) onto `cmd`.
+	fn encode_copy_projections(
+		&mut self,
+		cmd: &ProtocolObject<dyn MTLCommandBuffer>,
+		accept: bool,
+	) -> Result<()> {
 		let num_updated = self.num_updated_nodes + 1;
 		let num_pattern = self.num_patterns.div_ceil(128);
 		let grid_dim_y = num_updated.div_ceil(128);
 
-		let cmd = self.command_buffer()?;
-		let enc = self.compute_encoder(&cmd)?;
+		let enc = self.compute_encoder(cmd)?;
 
 		enc.setComputePipelineState(&self.copy_projections_pipeline);
 		unsafe {
@@ -470,14 +482,15 @@ impl MetalLikelihood {
 			},
 		);
 		enc.endEncoding();
-		cmd.commit();
-		cmd.waitUntilCompleted();
 		Ok(())
 	}
 
-	/// Copy `scale_sums` ↔ `scale_sums_backup` using a blit encoder.
-	fn blit_scale_sums(&self, accept: bool) -> Result<()> {
-		let cmd = self.command_buffer()?;
+	/// Encode a `scale_sums` ↔ `scale_sums_backup` blit copy onto `cmd`.
+	fn encode_blit_scale_sums(
+		&self,
+		cmd: &ProtocolObject<dyn MTLCommandBuffer>,
+		accept: bool,
+	) -> Result<()> {
 		let enc = cmd
 			.blitCommandEncoder()
 			.context("Metal: blitCommandEncoder")?;
@@ -495,7 +508,18 @@ impl MetalLikelihood {
             );
 		}
 		enc.endEncoding();
-		cmd.commit();
+		Ok(())
+	}
+
+	/// Check that the last committed command buffer completed without error.
+	fn check_completion(
+		cmd: &ProtocolObject<dyn MTLCommandBuffer>,
+	) -> Result<()> {
+		if let Some(err) = cmd.error() {
+			return Err(anyhow!(
+				"Metal command buffer error: {err:?}"
+			));
+		}
 		Ok(())
 	}
 
@@ -547,7 +571,7 @@ impl MetalLikelihood {
 			.newCommandQueue()
 			.context("Metal: newCommandQueue")?;
 
-		// Use f32 for GPU constants (Metal doesn't support double buffers).
+		// f32 scale constants (matching the f32 GPU buffers above).
 		// Clamp to f32 representable range: scale_ln > 88 would overflow
 		// f32::MAX ≈ e^88.7, so e^300 = inf.  Clamping scale_mult to f32::MAX
 		// effectively disables rescaling for those very-large scale_ln values
@@ -602,7 +626,7 @@ impl MetalLikelihood {
 		)?;
 
 		let leaves_buf = upload_buf::<u8>(&device, &leaves)?;
-		// GPU buffers use f32 (Metal doesn't support f64 buffer pointers)
+		// GPU buffers use f32: Apple GPU f64 throughput is ~1/32 of f32.
 		let projections =
 			alloc_buf::<GpuRow>(&device, num_nodes * num_patterns)?;
 		let projections_backup =
