@@ -102,8 +102,6 @@ kernel void propose(
             s_likelihood[tile * 4 + sub] *= SCALE_MULT;
         }
 
-        // Unconditional barrier: all 64 threads sync even when only
-        // some tiles scale, so writes are visible before the read below.
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
         if (sub == 0 && should_scale != old_scale) {
@@ -165,7 +163,7 @@ kernel void update_likelihoods(
     }
 }
 
-// Grid: (ceil(num_patterns / 128), ceil(num_updated / 128), 128)
+// Grid:  (ceil(num_patterns / 128), ceil(num_updated / 128), 128)
 // Block: (128, 1, 1)
 kernel void copy_projections(
     device const f32x4* p_src           [[buffer(0)]],

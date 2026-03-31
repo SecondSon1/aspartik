@@ -45,7 +45,7 @@ fn upload_buf<T: bytemuck::Pod>(
 	device: &ProtocolObject<dyn MTLDevice>,
 	data: &[T],
 ) -> Result<Retained<ProtocolObject<dyn MTLBuffer>>> {
-	let bytes = data.len() * size_of::<T>();
+	let bytes = std::mem::size_of_val(data);
 	let buf_ptr = NonNull::new(data.as_ptr() as *mut c_void)
 		.ok_or_else(|| anyhow!("Metal: null data pointer"))?;
 	// SAFETY: `data` outlives the call; Metal copies the bytes before
@@ -123,7 +123,7 @@ pub struct MetalLikelihood {
 	num_updated_nodes: u32,
 }
 
-// SAFETY: Retained is atomically counted smart pointer
+// SAFETY: Retained is atomically counted smart pointer.
 unsafe impl Send for MetalLikelihood {}
 
 impl Calculator<4, f64> for MetalLikelihood {
@@ -196,11 +196,11 @@ impl Calculator<4, f64> for MetalLikelihood {
 		};
 
 		let total: f64 = likelihoods_f32
-			.iter()
-			.zip(&scale_sums)
+			.into_iter()
+			.zip(scale_sums)
 			.zip(&self.pattern_weights)
-			.map(|((l, &scale), &weight)| {
-				(f64::from(*l) - f64::from(scale))
+			.map(|((l, scale), &weight)| {
+				(f64::from(l) - f64::from(scale))
 					* f64::from(weight)
 			})
 			.sum();
@@ -570,7 +570,7 @@ impl MetalLikelihood {
              #define SCALE_LN     {scale_ln}u\n\
              #define SCALE_THRESHOLD {scale_threshold:e}f\n\
              #define SCALE_MULT    {scale_mult:e}f\n\
-             {METAL_SRC}",);
+             {METAL_SRC}");
 		let src_ns = NSString::from_str(&full_src);
 		let opts = MTLCompileOptions::new();
 		opts.setLanguageVersion(MTLLanguageVersion::Version3_0);
