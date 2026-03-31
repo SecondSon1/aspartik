@@ -202,6 +202,12 @@ def b3_config(
             likelihood = CUDALikelihood(
                 msa=msa, substitution=sub_model, clock=clock, tree=tree
             )
+        case "metal":
+            from aspartik.b3.likelihoods import MetalLikelihood
+
+            likelihood = MetalLikelihood(
+                msa=msa, substitution=sub_model, clock=clock, tree=tree
+            )
 
     callbacks = []
     if print_every:
