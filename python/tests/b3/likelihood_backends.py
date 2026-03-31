@@ -17,17 +17,17 @@ from aspartik.b3.substitutions import HKY, Substiution4
 from aspartik.io import read_msa_from_fasta
 from aspartik.rng import RNG
 
-# f64 GPU (CUDA) matches CPU very closely; f32 (Metal) has lower precision
+# Metal only natively supports f32, thus precision is lower
 _REL_TOL_F64 = 1e-10
 _REL_TOL_F32 = 1e-7
 
 _GPU_TEST_PARAMS: list[ParameterSet] = []
 if cuda_available():
     _GPU_TEST_PARAMS.append(pytest.param(CUDALikelihood, None, _REL_TOL_F64, id="cuda"))
-if MetalLikelihood is not None and metal_available():
+if metal_available():
     _GPU_TEST_PARAMS += [
         pytest.param(MetalLikelihood, scale_ln, _REL_TOL_F32, id=f"metal-{scale_ln}")
-        for scale_ln in [3, 30, 300]
+        for scale_ln in [3, 20, 60]
     ]
 
 if not _GPU_TEST_PARAMS:

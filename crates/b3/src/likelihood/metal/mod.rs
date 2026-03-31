@@ -25,7 +25,6 @@ type GpuTransition = [f32; 16];
 
 const METAL_SRC: &str = include_str!("kernels.metal");
 
-/// Allocate a zeroed shared-mode Metal buffer holding `count` values of type `T`.
 fn alloc_buf<T>(
 	device: &ProtocolObject<dyn MTLDevice>,
 	count: usize,
@@ -35,14 +34,13 @@ fn alloc_buf<T>(
 		.newBufferWithLength_options(bytes, MTLResourceOptions::empty())
 		.ok_or_else(|| anyhow!("Metal: alloc {bytes} bytes failed"))?;
 
-	// Zero-initialise (contents() is shared memory on Apple Silicon)
+	// SAFETY: Allocated exactly `bytes`.
 	unsafe {
 		buf.contents().as_ptr().cast::<u8>().write_bytes(0, bytes);
 	}
 	Ok(buf)
 }
 
-/// Create a shared-mode Metal buffer pre-populated with `data`.
 fn upload_buf<T: bytemuck::Pod>(
 	device: &ProtocolObject<dyn MTLDevice>,
 	data: &[T],
@@ -63,10 +61,6 @@ fn upload_buf<T: bytemuck::Pod>(
 	Ok(buf)
 }
 
-/// Write a slice into a (shared-mode) Metal buffer.
-///
-/// # Safety
-/// The buffer must be large enough to hold `data`.
 unsafe fn write_buf<T: bytemuck::Pod>(
 	buf: &ProtocolObject<dyn MTLBuffer>,
 	data: &[T],
@@ -77,11 +71,6 @@ unsafe fn write_buf<T: bytemuck::Pod>(
 	}
 }
 
-/// Read `count` values of type `T` from a (shared-mode) Metal buffer.
-///
-/// # Safety
-/// The buffer must hold at least `count` values of type `T`, and no GPU
-/// work writing to it may be in flight.
 unsafe fn read_slice<T: bytemuck::Pod + Copy>(
 	buf: &ProtocolObject<dyn MTLBuffer>,
 	count: usize,
@@ -196,7 +185,6 @@ impl Calculator<4, f64> for MetalLikelihood {
 		Self::check_completion(&cmd)?;
 
 		// SAFETY: GPU work is complete, buffers are now CPU-readable.
-		// Likelihoods are stored as f32 on the GPU; promote to f64 here.
 		let likelihoods_f32: Vec<f32> = unsafe {
 			read_slice(
 				&self.likelihoods,
@@ -248,7 +236,6 @@ impl Calculator<4, f64> for MetalLikelihood {
 }
 
 impl MetalLikelihood {
-	/// Encode the leaf-projection update kernel onto `cmd`.
 	fn encode_update_leaves(
 		&self,
 		cmd: &ProtocolObject<dyn MTLCommandBuffer>,
@@ -291,7 +278,6 @@ impl MetalLikelihood {
 		Ok(())
 	}
 
-	/// Encode the main `propose` kernel onto `cmd`.
 	fn encode_update_all(
 		&self,
 		cmd: &ProtocolObject<dyn MTLCommandBuffer>,
@@ -349,7 +335,6 @@ impl MetalLikelihood {
 		Ok(())
 	}
 
-	/// Encode the root likelihood kernel onto `cmd`.
 	fn encode_update_likelihoods(
 		&self,
 		cmd: &ProtocolObject<dyn MTLCommandBuffer>,
@@ -408,7 +393,6 @@ impl MetalLikelihood {
 		Ok(())
 	}
 
-	/// Encode the copy_projections kernel (accept or reject) onto `cmd`.
 	fn encode_copy_projections(
 		&mut self,
 		cmd: &ProtocolObject<dyn MTLCommandBuffer>,
@@ -485,7 +469,6 @@ impl MetalLikelihood {
 		Ok(())
 	}
 
-	/// Encode a `scale_sums` ↔ `scale_sums_backup` blit copy onto `cmd`.
 	fn encode_blit_scale_sums(
 		&self,
 		cmd: &ProtocolObject<dyn MTLCommandBuffer>,
@@ -511,7 +494,6 @@ impl MetalLikelihood {
 		Ok(())
 	}
 
-	/// Check that the last committed command buffer completed without error.
 	fn check_completion(
 		cmd: &ProtocolObject<dyn MTLCommandBuffer>,
 	) -> Result<()> {
@@ -522,8 +504,6 @@ impl MetalLikelihood {
 		}
 		Ok(())
 	}
-
-	// ── Low-level helpers ──────────────────────────────────────────────────
 
 	fn command_buffer(
 		&self,
@@ -539,7 +519,6 @@ impl MetalLikelihood {
 			.context("Metal: computeCommandEncoder")
 	}
 
-	/// Pass a `u32` scalar via `setBytes` (avoids allocating a small buffer).
 	fn set_u32(
 		&self,
 		enc: &ProtocolObject<dyn MTLComputeCommandEncoder>,
@@ -585,8 +564,6 @@ impl MetalLikelihood {
 		let num_nodes = num_leaves + num_internals;
 		let num_edges = num_internals * 2;
 
-		// Bake constants into the shader source.
-		// Use explicit decimal notation so Metal always parses them as floats.
 		let full_src =
 			format!("#define NUM_PATTERNS {num_patterns}u\n\
              #define NUM_LEAVES   {num_leaves}u\n\
@@ -596,8 +573,6 @@ impl MetalLikelihood {
              {METAL_SRC}",);
 		let src_ns = NSString::from_str(&full_src);
 		let opts = MTLCompileOptions::new();
-		// Metal 3.0+ enables double-precision arithmetic on Apple silicon
-		// (GPU family apple7+) and recent AMD GPUs.
 		opts.setLanguageVersion(MTLLanguageVersion::Version3_0);
 		let library = device
 			.newLibraryWithSource_options_error(
