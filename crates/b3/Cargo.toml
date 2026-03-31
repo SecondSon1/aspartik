@@ -33,5 +33,10 @@ rand_pcg = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_verbatim = { workspace = true, features = ["std"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+objc2-metal = { workspace = true }
+objc2-foundation = { workspace = true }
+
 [lints]
 workspace = true
