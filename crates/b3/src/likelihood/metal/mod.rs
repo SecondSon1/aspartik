@@ -61,24 +61,6 @@ fn upload_buf<T: bytemuck::Pod>(
 	Ok(buf)
 }
 
-unsafe fn write_buf<T: bytemuck::Pod>(
-	buf: &ProtocolObject<dyn MTLBuffer>,
-	data: &[T],
-) {
-	let ptr = buf.contents().as_ptr().cast::<T>();
-	unsafe {
-		ptr.copy_from_nonoverlapping(data.as_ptr(), data.len());
-	}
-}
-
-unsafe fn read_slice<T: bytemuck::Pod + Copy>(
-	buf: &ProtocolObject<dyn MTLBuffer>,
-	count: usize,
-) -> Vec<T> {
-	let ptr = buf.contents().as_ptr().cast::<T>();
-	unsafe { std::slice::from_raw_parts(ptr, count).to_vec() }
-}
-
 pub struct MetalLikelihood {
 	_device: Retained<ProtocolObject<dyn MTLDevice>>,
 	queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
@@ -138,23 +120,35 @@ impl Calculator<4, f64> for MetalLikelihood {
 		self.num_updated_nodes = nodes.len() as u32 - 1;
 
 		let root_children = *children.last().unwrap();
-		let nodes_u32: Vec<u32> =
-			nodes.iter().map(|&n| n as u32).collect();
-		let children_u32: Vec<u32> = children
-			.iter()
-			.flat_map(|&[l, r]| [l as u32, r as u32])
-			.collect();
-		let tms_f32: Vec<GpuTransition> = {
+
+		// SAFETY: Metal buffers were allocated with sufficient sizes and
+		// we use unified memory, so we can write directly via the CPU
+		// pointer without an intermediate copy.
+		unsafe {
+			let dst = self.nodes.contents().as_ptr().cast::<u32>();
+			for (i, &n) in nodes.iter().enumerate() {
+				dst.add(i).write(n as u32);
+			}
+
+			let dst =
+				self.children.contents().as_ptr().cast::<u32>();
+			for (i, &[l, r]) in children.iter().enumerate() {
+				dst.add(i * 2).write(l as u32);
+				dst.add(i * 2 + 1).write(r as u32);
+			}
+
 			let tms_flat: &[Transition] =
 				bytemuck::cast_slice(&tms);
-			tms_flat.iter().map(|t| t.map(|v| v as f32)).collect()
-		};
-
-		// SAFETY: buffers were allocated with the correct sizes.
-		unsafe {
-			write_buf(&self.nodes, &nodes_u32);
-			write_buf(&self.children, &children_u32);
-			write_buf(&self.transitions, &tms_f32);
+			let dst = self
+				.transitions
+				.contents()
+				.as_ptr()
+				.cast::<f32>();
+			for (i, tm) in tms_flat.iter().enumerate() {
+				for (j, &v) in tm.iter().enumerate() {
+					dst.add(i * 16 + j).write(v as f32);
+				}
+			}
 		}
 
 		let mut leaves_end = leaves_end as u32;
@@ -168,7 +162,7 @@ impl Calculator<4, f64> for MetalLikelihood {
 		}
 		self.encode_update_all(&cmd, leaves_end, internals_start)?;
 
-		let root = *nodes_u32.last().unwrap();
+		let root = *nodes.last().unwrap() as u32;
 		let freq_f32: [f32; 4] =
 			transitions.frequencies().map(|v| v as f32);
 		self.encode_update_likelihoods(
@@ -184,23 +178,34 @@ impl Calculator<4, f64> for MetalLikelihood {
 		cmd.waitUntilCompleted();
 		Self::check_completion(&cmd)?;
 
-		// SAFETY: GPU work is complete, buffers are now CPU-readable.
-		let likelihoods_f32: Vec<f32> = unsafe {
-			read_slice(
-				&self.likelihoods,
-				self.num_patterns as usize,
+		// SAFETY: GPU work is complete; unified memory is CPU-readable
+		// without copying.
+		let n = self.num_patterns as usize;
+		let likelihoods_f32 = unsafe {
+			std::slice::from_raw_parts(
+				self.likelihoods
+					.contents()
+					.as_ptr()
+					.cast::<f32>(),
+				n,
 			)
 		};
-		let scale_sums: Vec<u32> = unsafe {
-			read_slice(&self.scale_sums, self.num_patterns as usize)
+		let scale_sums = unsafe {
+			std::slice::from_raw_parts(
+				self.scale_sums
+					.contents()
+					.as_ptr()
+					.cast::<u32>(),
+				n,
+			)
 		};
 
 		let total: f64 = likelihoods_f32
-			.into_iter()
+			.iter()
 			.zip(scale_sums)
 			.zip(&self.pattern_weights)
 			.map(|((l, scale), &weight)| {
-				(f64::from(l) - f64::from(scale))
+				(f64::from(*l) - f64::from(*scale))
 					* f64::from(weight)
 			})
 			.sum();

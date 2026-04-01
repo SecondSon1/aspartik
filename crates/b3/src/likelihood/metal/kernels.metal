@@ -59,19 +59,19 @@ kernel void propose(
     device const u32*   internals_start_buf [[buffer(9)]],
 
     uint tpg_x  [[thread_position_in_threadgroup]],
-    uint tgpg_x [[threadgroup_position_in_grid]]
+    uint tgpg_x [[threadgroup_position_in_grid]],
+    uint simd_lane [[thread_index_in_simdgroup]]
 ) {
     u32 pattern = (tgpg_x * BLOCK_SIZE + tpg_x) / 4;
     if (pattern >= NUM_PATTERNS) return;
 
     u32 sub = tpg_x % 4;
-    u32 tile = tpg_x / 4;
 
     u32 num_updated = *num_updated_buf;
     u32 leaves_end = *leaves_end_buf;
     u32 internals_start = *internals_start_buf;
 
-    threadgroup f32 s_likelihood[BLOCK_SIZE];
+    ushort base = (simd_lane / 4) * 4;
 
     for (u32 i = 0; i < leaves_end; i++) {
         CALCULATE_LEAF_PROJECTION
@@ -88,21 +88,24 @@ kernel void propose(
 
         f32 l_likelihood = projections[sidx(left_edge)] *
                            projections[sidx(right_edge)];
-        s_likelihood[tile * 4 + sub] = l_likelihood;
 
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+        f32 v0 = simd_shuffle(l_likelihood, base + 0);
+        f32 v1 = simd_shuffle(l_likelihood, base + 1);
+        f32 v2 = simd_shuffle(l_likelihood, base + 2);
+        f32 v3 = simd_shuffle(l_likelihood, base + 3);
 
         u32 should_scale =
-            (s_likelihood[tile * 4 + 0] < SCALE_THRESHOLD &&
-             s_likelihood[tile * 4 + 1] < SCALE_THRESHOLD &&
-             s_likelihood[tile * 4 + 2] < SCALE_THRESHOLD &&
-             s_likelihood[tile * 4 + 3] < SCALE_THRESHOLD) ? 1u : 0u;
+            (v0 < SCALE_THRESHOLD &&
+             v1 < SCALE_THRESHOLD &&
+             v2 < SCALE_THRESHOLD &&
+             v3 < SCALE_THRESHOLD) ? 1u : 0u;
 
         if (should_scale) {
-            s_likelihood[tile * 4 + sub] *= SCALE_MULT;
+            v0 *= SCALE_MULT;
+            v1 *= SCALE_MULT;
+            v2 *= SCALE_MULT;
+            v3 *= SCALE_MULT;
         }
-
-        threadgroup_barrier(mem_flags::mem_threadgroup);
 
         if (sub == 0 && should_scale != old_scale) {
             scales[scale_idx] = (u8)should_scale;
@@ -113,12 +116,7 @@ kernel void propose(
             }
         }
 
-        f32x4 likelihood = f32x4(
-            s_likelihood[tile * 4 + 0],
-            s_likelihood[tile * 4 + 1],
-            s_likelihood[tile * 4 + 2],
-            s_likelihood[tile * 4 + 3]
-        );
+        f32x4 likelihood = f32x4(v0, v1, v2, v3);
 
         projections[sidx(this_edge)] = dot(transitions[i * 4 + sub], likelihood);
     }
