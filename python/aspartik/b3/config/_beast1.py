@@ -7,6 +7,32 @@ from aspartik.data.msa import MSA
 
 from ._shared import CalculatorKind, SubstitutionModel, TreePrior
 
+
+def _format_taxa(
+    names: list[str],
+    heights: Optional[Sequence] = None,
+) -> str:
+    if heights:
+        taxa = [
+            f'<taxon id="{name}">\n\t\t<date value="{height}" direction="backwards" units="years"/>\n\t</taxon>'
+            for name, height in zip(names, heights)
+        ]
+    else:
+        taxa = [f'<taxon id="{name}"/>' for name in names]
+    return "\n\t\t".join(taxa)
+
+
+def _format_sequences(msa: MSA) -> str:
+    sequences = []
+    for i in range(msa.num_sequences):
+        name = msa.sequence_name(i)
+        seq = str(msa.sequence(i))
+        sequences.append(
+            f'<sequence>\n\t\t\t<taxon idref="{name}"/>\n\t\t\t{seq}\n\t\t</sequence>'
+        )
+    return "\n\t\t".join(sequences)
+
+
 _beast1_default_template = """<?xml version="1.0" standalone="yes"?>
 
 <beast version="10.5.0">
@@ -22,28 +48,7 @@ _beast1_default_template = """<?xml version="1.0" standalone="yes"?>
         <alignment idref="alignment"/>
     </patterns>
 
-    <constantSize id="_starting_coalescent" units="years">
-        <populationSize>
-            <parameter id="_starting_population_size" value="100.0" lower="0.0"/>
-        </populationSize>
-    </constantSize>
-    <coalescentSimulator id="startingTree">
-        <taxa idref="taxa"/>
-        <constantSize idref="_starting_coalescent"/>
-    </coalescentSimulator>
-
-    <treeModel id="tree">
-        <coalescentTree idref="startingTree"/>
-        <rootHeight>
-            <parameter id="tree.rootHeight"/>
-        </rootHeight>
-        <nodeHeights internalNodes="true">
-            <parameter id="tree.internalNodeHeights"/>
-        </nodeHeights>
-        <nodeHeights internalNodes="true" rootNode="true">
-            <parameter id="tree.allInternalNodeHeights"/>
-        </nodeHeights>
-    </treeModel>
+{tree_init}
 
 {tree_prior}
 
@@ -57,14 +62,7 @@ _beast1_default_template = """<?xml version="1.0" standalone="yes"?>
         </substitutionModel>
     </siteModel>
 
-    <treeDataLikelihood id="treeLikelihood" useAmbiguities="false" usePreOrder="false">
-        <partition>
-            <patterns idref="patterns"/>
-            <siteModel idref="siteModel"/>
-        </partition>
-        <treeModel idref="tree"/>
-        <strictClockBranchRates idref="branchRates"/>
-    </treeDataLikelihood>
+{likelihood_block}
 
     <operators id="operators" optimizationSchedule="log">
 {operators}
@@ -78,7 +76,7 @@ _beast1_default_template = """<?xml version="1.0" standalone="yes"?>
                 <strictClockBranchRates idref="branchRates"/>
             </prior>
             <likelihood id="likelihood">
-                <treeDataLikelihood idref="treeLikelihood"/>
+                {likelihood_ref}
             </likelihood>
         </posterior>
         <operators idref="operators"/>
@@ -154,10 +152,14 @@ def beast1_config(
     msa: MSA,
     *,
     heights: Optional[Sequence] = None,
+    newick: Optional[str] = None,
     substitution_model: SubstitutionModel,
+    kappa: float = 2.0,
+    frequencies: tuple[float, ...] = (0.25, 0.25, 0.25, 0.25),
     operator_mix: Literal["default", "classic"] = "default",
     clock_rate: Optional[float] = None,
-    tree_prior: TreePrior,
+    tree_prior: Optional[TreePrior] = None,
+    use_beagle: bool = True,
     log_path: Optional[str] = None,
     tree_log_path: Optional[str] = None,
     tree_log_every: int = 1_000,
@@ -166,38 +168,68 @@ def beast1_config(
 ):
     operators, priors, log = "", "", ""
 
-    if heights:
-        taxa = [
-            f'<taxon id="{name}">\n\t\t<date value="{height}" direction="backwards" units="years"/>\n\t</taxon>'
-            for name, height in zip(msa.sequence_names(), heights)
-        ]
-    else:
-        taxa = [f'<taxon id="{name}"/>' for name in msa.sequence_names()]
-    taxa = "\n\t\t".join(taxa)
+    taxa = _format_taxa(list(msa.sequence_names()), heights)
+    sequences = _format_sequences(msa)
 
-    sequences = []
-    for i in range(msa.num_sequences):
-        name = msa.sequence_name(i)
-        seq = str(msa.sequence(i))
-        sequences.append(
-            f'<sequence>\n\t\t\t<taxon idref="{name}"/>\n\t\t\t{seq}\n\t\t</sequence>'
-        )
-    sequences = "\n\t\t".join(sequences)
+    if newick:
+        tree_init = f"""\
+    <newick id="startingTree" usingDates="false">
+        {newick}
+    </newick>
+
+    <treeModel id="tree">
+        <newick idref="startingTree"/>
+        <rootHeight>
+            <parameter id="tree.rootHeight"/>
+        </rootHeight>
+        <nodeHeights internalNodes="true">
+            <parameter id="tree.internalNodeHeights"/>
+        </nodeHeights>
+        <nodeHeights internalNodes="true" rootNode="true">
+            <parameter id="tree.allInternalNodeHeights"/>
+        </nodeHeights>
+    </treeModel>"""
+    else:
+        tree_init = """\
+    <constantSize id="_starting_coalescent" units="years">
+        <populationSize>
+            <parameter id="_starting_population_size" value="100.0" lower="0.0"/>
+        </populationSize>
+    </constantSize>
+    <coalescentSimulator id="startingTree">
+        <taxa idref="taxa"/>
+        <constantSize idref="_starting_coalescent"/>
+    </coalescentSimulator>
+
+    <treeModel id="tree">
+        <coalescentTree idref="startingTree"/>
+        <rootHeight>
+            <parameter id="tree.rootHeight"/>
+        </rootHeight>
+        <nodeHeights internalNodes="true">
+            <parameter id="tree.internalNodeHeights"/>
+        </nodeHeights>
+        <nodeHeights internalNodes="true" rootNode="true">
+            <parameter id="tree.allInternalNodeHeights"/>
+        </nodeHeights>
+    </treeModel>"""
+
+    freq_str = " ".join(str(f) for f in frequencies)
 
     substitution_model_s = None
     match substitution_model:
         case "HKY":
-            substitution_model_s = """
+            substitution_model_s = f"""
     <HKYModel id="hky">
         <frequencies>
             <frequencyModel dataType="nucleotide">
                 <frequencies>
-                    <parameter id="frequencies" value="0.25 0.25 0.25 0.25"/>
+                    <parameter id="frequencies" value="{freq_str}"/>
                 </frequencies>
             </frequencyModel>
         </frequencies>
         <kappa>
-            <parameter id="kappa" value="2.0" lower="0.0"/>
+            <parameter id="kappa" value="{kappa}" lower="0.0"/>
         </kappa>
     </HKYModel>
 """
@@ -220,6 +252,9 @@ def beast1_config(
             <parameter idref="kappa"/>
             <parameter idref="frequencies"/>
             """
+
+    if newick:
+        operator_mix = "classic"
 
     match operator_mix:
         case "default":
@@ -279,8 +314,10 @@ def beast1_config(
 
     assert clock_s is not None
 
-    tree_prior_s = None
+    tree_prior_s = ""
     match tree_prior:
+        case None:
+            pass
         case "constant":
             tree_prior_s = """
     <constantSize id="constant_population" units="years">
@@ -402,11 +439,33 @@ def beast1_config(
             <speciationLikelihood idref="prior:yule"/>
             """
 
-    assert tree_prior_s is not None
+    if use_beagle:
+        likelihood_block = """\
+    <treeDataLikelihood id="treeLikelihood" useAmbiguities="false" usePreOrder="false">
+        <partition>
+            <patterns idref="patterns"/>
+            <siteModel idref="siteModel"/>
+        </partition>
+        <treeModel idref="tree"/>
+        <strictClockBranchRates idref="branchRates"/>
+    </treeDataLikelihood>"""
+        likelihood_ref = '<treeDataLikelihood idref="treeLikelihood"/>'
+    else:
+        likelihood_block = """\
+    <treeLikelihood id="treeLikelihood" useAmbiguities="false">
+        <patterns idref="patterns"/>
+        <treeModel idref="tree"/>
+        <siteModel idref="siteModel"/>
+        <strictClockBranchRates idref="branchRates"/>
+    </treeLikelihood>"""
+        likelihood_ref = '<treeLikelihood idref="treeLikelihood"/>'
 
     return _beast1_default_template.format(
         taxa=taxa,
         sequences=sequences,
+        tree_init=tree_init,
+        likelihood_block=likelihood_block,
+        likelihood_ref=likelihood_ref,
         clock=clock_s,
         substitution_model=substitution_model_s,
         operators=operators,
@@ -440,3 +499,46 @@ def beast1_run(
         args.append(tmp.name)
 
         subprocess.run(args)
+
+
+def beast1_likelihood(
+    msa: MSA,
+    newick: str,
+    kappa: float,
+    frequencies: tuple[float, ...],
+    clock_rate: float,
+) -> float:
+    import pandas as pd
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = f"{tmpdir}/beast.log"
+        config = beast1_config(
+            msa,
+            substitution_model="HKY",
+            newick=newick,
+            kappa=kappa,
+            frequencies=frequencies,
+            clock_rate=clock_rate,
+            use_beagle=False,
+            log_path=log_path,
+            screen_log_every=None,
+            length=0,
+        )
+
+        xml_path = f"{tmpdir}/beast.xml"
+        with open(xml_path, "w") as f:
+            f.write(config)
+
+        result = subprocess.run(
+            ["beast", "-seed", "1", "-citations_off", "-overwrite", xml_path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"BEAST1 failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+            )
+
+        df = pd.read_csv(log_path, sep="\t", comment="#")
+        return float(df["likelihood"].iloc[0])

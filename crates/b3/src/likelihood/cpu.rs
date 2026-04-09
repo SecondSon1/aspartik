@@ -3,8 +3,29 @@
 
 use anyhow::Result;
 use bytemuck::cast_slice;
-use fork_union::{SyncConstPtr, SyncMutPtr, ThreadPool, count_logical_cores};
 use parking_lot::MutexGuard;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+
+// SAFETY: The parallel work in `propose` partitions patterns into disjoint
+// ranges. Therefore no two threads access the same memory through these pointers.
+
+struct SyncConstPtr<T>(*const T);
+unsafe impl<T> Send for SyncConstPtr<T> {}
+unsafe impl<T> Sync for SyncConstPtr<T> {}
+impl<T> SyncConstPtr<T> {
+	fn get(&self) -> *const T {
+		self.0
+	}
+}
+
+struct SyncMutPtr<T>(*mut T);
+unsafe impl<T> Send for SyncMutPtr<T> {}
+unsafe impl<T> Sync for SyncMutPtr<T> {}
+impl<T> SyncMutPtr<T> {
+	fn get(&self) -> *mut T {
+		self.0
+	}
+}
 
 use crate::{Transitions, likelihood::Calculator, parameters::Tree};
 use buffer::Buffer;
@@ -36,7 +57,7 @@ pub struct Cpu4Calculator {
 	/// `e^scale_ln`
 	scale_mult: f64,
 
-	pool: ThreadPool,
+	pool: rayon::ThreadPool,
 }
 
 impl Calculator<4, f64> for Cpu4Calculator {
@@ -125,8 +146,10 @@ impl Cpu4Calculator {
 		}
 
 		let num_threads = if num_threads == 0 {
-			let num_cores = count_logical_cores();
-			num_cores.min(num_patterns.div_ceil(1000))
+			std::thread::available_parallelism()
+				.map(|n| n.get())
+				.unwrap_or(1)
+				.min(num_patterns.div_ceil(1000))
 		} else {
 			num_threads
 		};
@@ -160,7 +183,10 @@ impl Cpu4Calculator {
 			scale_threshold,
 			scale_mult,
 
-			pool: ThreadPool::try_spawn(num_threads).unwrap(),
+			pool: rayon::ThreadPoolBuilder::new()
+				.num_threads(num_threads)
+				.build()
+				.unwrap(),
 		}
 	}
 }
@@ -179,10 +205,10 @@ unsafe fn propose(
 	let samples = state.samples.as_ptr();
 	let partials = state.partials.as_mut_ptr();
 
-	let partials_sync = SyncMutPtr::new(partials);
-	let samples_sync = SyncConstPtr::new(samples);
-	let scale_sums_sync = SyncMutPtr::new(state.scale_sums.as_mut_ptr());
-	let scales_sync = SyncMutPtr::new(state.scales.as_mut_ptr());
+	let partials_sync = SyncMutPtr(partials);
+	let samples_sync = SyncConstPtr(samples);
+	let scale_sums_sync = SyncMutPtr(state.scale_sums.as_mut_ptr());
+	let scales_sync = SyncMutPtr(state.scales.as_mut_ptr());
 
 	macro_rules! offset {
 		($index:expr) => {{
@@ -197,13 +223,19 @@ unsafe fn propose(
 		}};
 	}
 
-	let _ = state.pool.for_slices(num_patterns, |prong, count| {
-	let start = prong.task_index;
+	let num_threads = state.pool.current_num_threads();
+	let chunk_size = num_patterns.div_ceil(num_threads);
 
-	let partials = partials_sync.as_ptr();
-	let samples = samples_sync.as_ptr();
-	let scale_sums = scale_sums_sync.as_ptr();
-	let scales = scales_sync.as_ptr();
+	state.pool.install(|| {
+	(0..num_threads).into_par_iter().for_each(|thread_idx| {
+	let start = thread_idx * chunk_size;
+	if start >= num_patterns { return; }
+	let count = chunk_size.min(num_patterns - start);
+
+	let partials = partials_sync.get();
+	let samples = samples_sync.get();
+	let scale_sums = scale_sums_sync.get();
+	let scales = scales_sync.get();
 
 	for (i, &internal) in internals.iter().enumerate() {
 		let [left, right] = children[i];  // left < right
@@ -270,6 +302,7 @@ unsafe fn propose(
 		}
 	}
 
+	});
 	});
 
 	let root = *internals.last().unwrap();

@@ -31,8 +31,10 @@ def test_compare_likelihood():
             clock=Clock.Strict(clock_rate),
             tree=tree,
             scale_ln=scale,
+            num_threads=threads,
         )
         for scale in SCALES
+        for threads in [0, 1, 4, 32]
     ]
     try:
         cuda_calculator = CUDALikelihood(
